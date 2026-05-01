@@ -1,4 +1,9 @@
-"""Main CLI entry point for Zoom Leadership Coach."""
+"""Main CLI entry point for Zoom Leadership Coach.
+
+Presentation layer only — all business logic lives in `pipeline.py`. This
+module handles argument parsing, terminal IO (rich console, spinners,
+prompts via TodoApprovalWorkflow), and scheduler/setup commands.
+"""
 
 import logging
 import os
@@ -6,7 +11,6 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from email.utils import parsedate_to_datetime
 
 import click
 from dotenv import load_dotenv
@@ -15,35 +19,25 @@ from rich.panel import Panel
 
 from .calendar_client import CalendarClient
 from .coach import LeadershipCoach
-from .constants import DEFAULT_TODO_DURATION_MINUTES
+from . import pipeline
 from .gmail_client import GmailClient
-from .parser import MeetingSummaryParser
 from .scheduler import SchedulerSetup
 from .todo_approval import TodoApprovalWorkflow
-from .utils import (
-    ensure_directories,
-    get_data_path,
-    load_config,
-    load_json,
-    save_json,
-    setup_logging,
-)
+from .utils import ensure_directories, get_data_path, setup_logging
 from .zoom_client import ZoomClient
 
-# Load environment variables
 load_dotenv()
 
 console = Console()
 
 
-def get_coach():
+def get_coach() -> LeadershipCoach:
     """Build a LeadershipCoach. Backend is selected by USE_BEDROCK env var."""
     return LeadershipCoach()
 
 
 def parse_after_time(after_str: str) -> datetime:
-    """
-    Parse the --after time string into a datetime.
+    """Parse the --after time string into a datetime.
 
     Accepts "YYYY-MM-DD", "YYYY-MM-DD HH:MM", and "today <HH:MM|HHam|HHpm>".
     """
@@ -77,72 +71,6 @@ def parse_after_time(after_str: str) -> datetime:
 def _slugify(title: str, max_length: int = 30) -> str:
     """Turn a meeting title into a filesystem-safe slug."""
     return re.sub(r"[^a-z0-9]+", "-", title[:max_length].lower()).strip("-") or "meeting"
-
-
-def _normalize_name(name: str) -> str:
-    return (name or "").strip().lower()
-
-
-def is_personal_item(item: dict, personal_keywords: list) -> bool:
-    """True if the action item's text matches a personal keyword."""
-    task_text = (item.get("task") or "").lower()
-    return any(keyword.lower() in task_text for keyword in (personal_keywords or []))
-
-
-def strip_personal_items(action_items: list, personal_keywords: list) -> tuple:
-    """
-    Return (work_items, personal_items) split.
-    Work items are passed to the coach and report; personal are dropped.
-    """
-    work, personal = [], []
-    for item in action_items:
-        if is_personal_item(item, personal_keywords):
-            personal.append(item)
-        else:
-            work.append(item)
-    return work, personal
-
-
-def filter_todo_candidates(
-    action_items: list,
-    user_names: list,
-) -> tuple:
-    """
-    Partition (already-work-only) action items into (keep, skipped_not_mine).
-
-    - keep: items owned by the user
-    - skipped_not_mine: owner is another participant
-    """
-    user_set = {_normalize_name(n) for n in user_names if n}
-
-    keep, not_mine = [], []
-    for item in action_items:
-        owner = _normalize_name(item.get("owner", ""))
-        if not owner or owner not in user_set:
-            not_mine.append(item)
-            continue
-        keep.append(item)
-
-    return keep, not_mine
-
-
-def filter_emails_by_date(emails: list, cutoff_date: datetime) -> list:
-    """Filter emails to only those received after cutoff_date."""
-    filtered = []
-    for email in emails:
-        try:
-            # Parse the email date
-            email_date = parsedate_to_datetime(email["date"])
-            # Make it timezone-naive for comparison
-            email_date = email_date.replace(tzinfo=None)
-
-            if email_date >= cutoff_date:
-                filtered.append(email)
-        except Exception:
-            # If we can't parse the date, include it to be safe
-            filtered.append(email)
-
-    return filtered
 
 
 @click.command()
@@ -304,7 +232,7 @@ def process_gmail_summaries(
     limit: int = None,
     auto_approve: bool = False,
 ):
-    """Process Zoom summaries from Gmail."""
+    """Process Zoom summaries from Gmail. CLI presentation over pipeline.*"""
     cutoff_date = None
     if after_time:
         cutoff_date = parse_after_time(after_time)
@@ -316,50 +244,30 @@ def process_gmail_summaries(
         Panel("Processing Zoom meeting summaries from Gmail", title="Zoom Coach")
     )
 
-    processed_file = get_data_path("processed_emails.json")
-    processed_ids = load_json(processed_file).get("processed_ids", [])
-
     with console.status("[cyan]Fetching emails from Gmail...[/cyan]"):
-        emails = GmailClient().get_latest_unprocessed_summaries(processed_ids)
-    emails = _apply_email_filters(emails, cutoff_date, limit)
+        emails = pipeline.fetch_pending_emails(cutoff_date=cutoff_date, limit=limit)
 
     if not emails:
         console.print("[yellow]No new Zoom summaries found[/yellow]")
         return
     console.print(f"[green]Found {len(emails)} new meeting summary/summaries[/green]\n")
 
-    parser = MeetingSummaryParser()
     calendar_client = CalendarClient()
     coach = get_coach()
-    config = load_config()
 
     with console.status("[cyan]Checking calendar availability...[/cyan]"):
-        available_slots = calendar_client.find_available_slots(
-            duration_minutes=DEFAULT_TODO_DURATION_MINUTES,
-            days_ahead=14,
-            preferred_times=config["scheduling"]["preferred_focus_times"],
-        )
+        available_slots = pipeline.compute_available_slots(calendar_client)
     console.print(f"[cyan]Available slots: {len(available_slots)}[/cyan]")
 
     for i, email in enumerate(emails, 1):
         console.print(
             f"\n[bold cyan]Processing meeting {i}/{len(emails)}[/bold cyan]"
         )
-        _process_one_email(
-            email=email,
-            parser=parser,
-            coach=coach,
-            calendar_client=calendar_client,
-            available_slots=available_slots,
-            config=config,
-            auto_approve=auto_approve,
+        _present_meeting_result(
+            email, available_slots, coach, calendar_client, auto_approve
         )
-        processed_ids.append(email["id"])
+        pipeline.mark_email_processed(email["id"])
 
-    save_json(
-        {"processed_ids": processed_ids, "last_run": datetime.now().isoformat()},
-        processed_file,
-    )
     console.print(
         Panel(
             f"✓ Processed {len(emails)} meeting(s)\n\n"
@@ -370,99 +278,72 @@ def process_gmail_summaries(
     )
 
 
-def _apply_email_filters(emails, cutoff_date, limit):
-    if cutoff_date:
-        emails = filter_emails_by_date(emails, cutoff_date)
-        console.print(
-            f"[cyan]Filtered to {len(emails)} meeting(s) after cutoff[/cyan]"
-        )
-    if limit is not None and limit > 0:
-        emails = emails[:limit]
-        console.print(f"[cyan]Limited to first {len(emails)} meeting(s)[/cyan]")
-    return emails
-
-
-def _process_one_email(
-    email, parser, coach, calendar_client, available_slots, config, auto_approve
-):
-    meeting_data = parser.parse(email["body"], email["subject"])
-    console.print(f"  Meeting: {meeting_data['title']}")
-
-    # Drop personal items before they hit the coach prompt, report, or calendar.
-    todo_cfg = config.get("todos", {})
-    if todo_cfg.get("skip_personal", True):
-        work_items, personal_items = strip_personal_items(
-            meeting_data["action_items"],
-            todo_cfg.get("personal_keywords", []),
-        )
-        meeting_data["action_items"] = work_items
-        if personal_items:
-            console.print(
-                f"  [dim]Stripped {len(personal_items)} personal item(s) from analysis[/dim]"
+def _present_meeting_result(email, available_slots, coach, calendar_client, auto_approve):
+    """Run the pipeline for one email and narrate the result to the console."""
+    with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]") as status:
+        def _progress(count: int) -> None:
+            status.update(
+                f"[cyan]Analyzing meeting with AI coach... ({count} chunks)[/cyan]"
             )
 
-    with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]") as status:
-        def _show_progress(count: int) -> None:
-            status.update(f"[cyan]Analyzing meeting with AI coach... ({count} chunks)[/cyan]")
-
-        analysis = coach.analyze_meeting(
-            meeting_data, available_slots, on_chunk=_show_progress
+        result = pipeline.analyze_meeting(
+            email,
+            available_slots,
+            coach=coach,
+            on_chunk=_progress,
         )
 
-    if analysis.get("error"):
+    console.print(f"  Meeting: {result.meeting_title}")
+    if result.stripped_personal_items:
         console.print(
-            f"  [red]✗ Coaching analysis failed: {analysis['error']}[/red]"
+            f"  [dim]Stripped {len(result.stripped_personal_items)} personal item(s) "
+            f"from analysis[/dim]"
         )
+
+    if result.error:
+        console.print(f"  [red]✗ Coaching analysis failed: {result.error}[/red]")
         console.print(
             "  [yellow]Skipping report and todo scheduling for this meeting.[/yellow]"
         )
         return
 
-    report_path = (
-        get_data_path("coaching_reports")
-        / f"{datetime.now().strftime('%Y-%m-%d_%H-%M')}_{_slugify(meeting_data['title'])}.md"
-    )
-    coach.generate_coaching_report(analysis, str(report_path))
-    console.print(f"  [green]✓ Coaching report saved: {report_path.name}[/green]")
+    if result.report_path:
+        console.print(
+            f"  [green]✓ Coaching report saved: {result.report_path.name}[/green]"
+        )
 
-    if not meeting_data["action_items"]:
+    if result.skipped_not_mine:
+        console.print(
+            f"  [dim]Skipped {len(result.skipped_not_mine)} item(s) owned by others[/dim]"
+        )
+
+    if not result.proposed_todos:
+        if result.action_items:
+            console.print("  [yellow]No user-owned work items to schedule[/yellow]")
         return
-
-    user_cfg = config.get("user", {})
-    user_names = [user_cfg.get("name", "")] + list(user_cfg.get("aliases", []))
-    kept, not_mine = filter_todo_candidates(meeting_data["action_items"], user_names=user_names)
-
-    if not_mine:
-        console.print(f"  [dim]Skipped {len(not_mine)} item(s) owned by others[/dim]")
-
-    if not kept:
-        console.print("  [yellow]No user-owned work items to schedule[/yellow]")
-        return
-
-    todos_for_calendar = [
-        {
-            "title": item["task"],
-            "description": (
-                f"From meeting: {meeting_data['title']}\n"
-                f"Owner: {item.get('owner', 'Not assigned')}\n"
-                f"Due: {item.get('due_date', 'Not specified')}"
-            ),
-            "priority": item.get("priority", "medium"),
-            "duration_minutes": DEFAULT_TODO_DURATION_MINUTES,
-        }
-        for item in kept
-    ]
 
     if auto_approve:
         with console.status("[cyan]Creating calendar todos...[/cyan]"):
-            created_ids = calendar_client.batch_create_todos(todos_for_calendar, available_slots)
+            created_ids = pipeline.apply_todos(result.proposed_todos, calendar_client)
         console.print(
             f"  [green]✓ Created {len(created_ids)} todo item(s) in calendar[/green]"
         )
     else:
-        console.print(f"\n[cyan]Found {len(kept)} action item(s) to review[/cyan]")
+        console.print(
+            f"\n[cyan]Found {len(result.proposed_todos)} action item(s) to review[/cyan]"
+        )
+        # TodoApprovalWorkflow still expects the legacy dict shape + slots list.
+        todos_for_calendar = [
+            {
+                "title": todo.title,
+                "description": todo.description,
+                "priority": todo.priority,
+                "duration_minutes": todo.duration_minutes,
+            }
+            for todo in result.proposed_todos
+        ]
         TodoApprovalWorkflow(calendar_client).approve_todos(
-            todos_for_calendar, available_slots, meeting_data["title"]
+            todos_for_calendar, available_slots, result.meeting_title
         )
 
 
@@ -477,7 +358,7 @@ def process_transcript_file(file_path: str, logger: logging.Logger, auto_approve
     meeting_data = {
         "title": Path(file_path).stem.replace("_", " ").title(),
         "date": datetime.now().strftime("%Y-%m-%d"),
-        "summary": transcript_content[:500],  # First 500 chars as summary
+        "summary": transcript_content[:500],
         "participants": [],
         "key_points": [],
         "action_items": [],
@@ -486,22 +367,14 @@ def process_transcript_file(file_path: str, logger: logging.Logger, auto_approve
         "raw_content": transcript_content,
     }
 
-    # Initialize clients
     calendar_client = CalendarClient()
     coach = get_coach()
 
-    # Get calendar availability
-    available_slots = calendar_client.find_available_slots(
-        duration_minutes=30,
-        days_ahead=14,
-        preferred_times=load_config()["scheduling"]["preferred_focus_times"],
-    )
+    available_slots = pipeline.compute_available_slots(calendar_client)
 
-    # Analyze with coach
     console.print("[cyan]Analyzing with AI coach...[/cyan]")
     analysis = coach.analyze_meeting(meeting_data, available_slots)
 
-    # Save report
     report_path = get_data_path("coaching_reports") / f"{datetime.now().strftime('%Y-%m-%d_%H-%M')}_transcript.md"
     coach.generate_coaching_report(analysis, str(report_path))
 
@@ -522,7 +395,6 @@ def process_zoom_meeting(meeting_id: str, logger: logging.Logger, auto_approve: 
         console.print("[red]Could not fetch transcript[/red]")
         return
 
-    # Process as transcript file
     process_transcript_file(transcript, logger, auto_approve)
 
 
