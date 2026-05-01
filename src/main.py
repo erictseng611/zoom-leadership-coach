@@ -93,6 +93,7 @@ def _slugify(title: str, max_length: int = 30) -> str:
 @click.option("--fast", is_flag=True, help="Use Claude Haiku for faster (cheaper, less deep) analysis")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 @click.option("--auto-approve", is_flag=True, help="Automatically create calendar events without approval (legacy mode)")
+@click.option("--no-todos", is_flag=True, help="Analysis only — generate coaching reports without creating any calendar todos")
 def main(
     setup: bool,
     init_principles: bool,
@@ -106,6 +107,7 @@ def main(
     fast: bool,
     verbose: bool,
     auto_approve: bool,
+    no_todos: bool,
 ):
     """
     Zoom Leadership Coach - AI-powered meeting analysis and leadership coaching.
@@ -157,6 +159,12 @@ def main(
             )
         return
 
+    if no_todos and auto_approve:
+        console.print(
+            "[red]--no-todos and --auto-approve are mutually exclusive[/red]"
+        )
+        sys.exit(1)
+
     # Run the main processing workflow
     try:
         if transcript:
@@ -164,7 +172,13 @@ def main(
         elif zoom_meeting_id:
             process_zoom_meeting(zoom_meeting_id, logger, auto_approve)
         else:
-            process_gmail_summaries(logger, after_time=after, limit=limit, auto_approve=auto_approve)
+            process_gmail_summaries(
+                logger,
+                after_time=after,
+                limit=limit,
+                auto_approve=auto_approve,
+                no_todos=no_todos,
+            )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/yellow]")
@@ -316,6 +330,7 @@ def process_gmail_summaries(
     after_time: str = None,
     limit: int = None,
     auto_approve: bool = False,
+    no_todos: bool = False,
 ):
     """Process Zoom summaries from Gmail. CLI presentation over pipeline.*"""
     cutoff_date = None
@@ -323,6 +338,11 @@ def process_gmail_summaries(
         cutoff_date = parse_after_time(after_time)
         console.print(
             f"[cyan]Filtering meetings after: {cutoff_date.strftime('%Y-%m-%d %H:%M')}[/cyan]"
+        )
+
+    if no_todos:
+        console.print(
+            "[yellow]--no-todos mode: analysis only, no calendar events will be created[/yellow]"
         )
 
     console.print(
@@ -349,7 +369,7 @@ def process_gmail_summaries(
             f"\n[bold cyan]Processing meeting {i}/{len(emails)}[/bold cyan]"
         )
         _present_meeting_result(
-            email, available_slots, coach, calendar_client, auto_approve
+            email, available_slots, coach, calendar_client, auto_approve, no_todos
         )
         pipeline.mark_email_processed(email["id"])
 
@@ -363,7 +383,9 @@ def process_gmail_summaries(
     )
 
 
-def _present_meeting_result(email, available_slots, coach, calendar_client, auto_approve):
+def _present_meeting_result(
+    email, available_slots, coach, calendar_client, auto_approve, no_todos=False
+):
     """Run the pipeline for one email and narrate the result to the console."""
     with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]") as status:
         def _progress(count: int) -> None:
@@ -405,6 +427,13 @@ def _present_meeting_result(email, available_slots, coach, calendar_client, auto
     if not result.proposed_todos:
         if result.action_items:
             console.print("  [yellow]No user-owned work items to schedule[/yellow]")
+        return
+
+    if no_todos:
+        console.print(
+            f"  [dim]{len(result.proposed_todos)} proposed todo(s) — not creating "
+            f"(--no-todos)[/dim]"
+        )
         return
 
     if auto_approve:
