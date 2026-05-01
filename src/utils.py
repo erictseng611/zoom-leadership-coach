@@ -63,12 +63,17 @@ def save_json(data: Dict[str, Any], filepath: Path) -> None:
 
 
 def load_json(filepath: Path) -> Dict[str, Any]:
-    """Load data from JSON file."""
-    if not filepath.exists():
+    """Load data from JSON file. Returns {} if missing, empty, or malformed."""
+    if not filepath.exists() or filepath.stat().st_size == 0:
         return {}
-
-    with open(filepath, "r") as f:
-        return json.load(f)
+    try:
+        with open(filepath, "r") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        logging.getLogger("zoom_coach").warning(
+            f"Malformed JSON at {filepath}, treating as empty"
+        )
+        return {}
 
 
 def get_credentials_path(filename: str) -> Path:
