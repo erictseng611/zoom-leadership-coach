@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-import sys
 from datetime import datetime
 from typing import Dict, List
 
@@ -109,23 +108,17 @@ class _BedrockProvider:
         text_parts = []
         input_tokens = 0
         output_tokens = 0
-        sys.stdout.write("\n")
         for event in response["body"]:
             chunk = json.loads(event["chunk"]["bytes"])
             event_type = chunk.get("type")
             if event_type == "content_block_delta":
                 delta = chunk.get("delta", {})
                 if delta.get("type") == "text_delta":
-                    text = delta.get("text", "")
-                    text_parts.append(text)
-                    sys.stdout.write(text)
-                    sys.stdout.flush()
+                    text_parts.append(delta.get("text", ""))
             elif event_type == "message_start":
                 input_tokens = chunk.get("message", {}).get("usage", {}).get("input_tokens", 0)
             elif event_type == "message_delta":
                 output_tokens = chunk.get("usage", {}).get("output_tokens", output_tokens)
-        sys.stdout.write("\n")
-        sys.stdout.flush()
         logger.info(f"Token usage - Input: {input_tokens}, Output: {output_tokens}")
         return "".join(text_parts)
 
