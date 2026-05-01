@@ -15,11 +15,7 @@ requests>=2.32.0
 
 # Utilities
 python-dotenv>=1.0.0
-python-dateutil>=2.9.0
 
 # CLI
 click>=8.1.0
 rich>=13.7.0
-
-# Data processing
-pydantic>=2.10.0

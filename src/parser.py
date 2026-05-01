@@ -3,7 +3,6 @@
 import html
 import logging
 import re
-from datetime import datetime
 from html.parser import HTMLParser
 from typing import Dict, List, Optional
 
@@ -300,75 +299,50 @@ class MeetingSummaryParser:
 
         return participants
 
+    def _extract_bulleted_section(
+        self, body: str, patterns: List[str], min_line_length: int
+    ) -> List[str]:
+        """Pull a bulleted list out of the first matching section header."""
+        for pattern in patterns:
+            match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
+            if not match:
+                continue
+            items = []
+            for line in match.group(1).split("\n"):
+                line = re.sub(r"^[-•*\d.)\]]\s*", "", line.strip())
+                if len(line) < min_line_length or _is_garbage_line(line):
+                    continue
+                items.append(line)
+            return items
+        return []
+
     def _extract_key_points(self, body: str) -> List[str]:
         """Extract key discussion points."""
-        key_points = []
-
-        section_patterns = [
-            r"key points?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
-            r"highlights?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
-            r"main topics?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
-        ]
-
-        content = ""
-        for pattern in section_patterns:
-            match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
-            if match:
-                content = match.group(1)
-                break
-
-        if content:
-            lines = content.split("\n")
-            for line in lines:
-                line = line.strip()
-                if line and len(line) > 10:
-                    # Remove bullet points
-                    line = re.sub(r"^[-•*\d.)\]]\s*", "", line)
-                    if _is_garbage_line(line):
-                        continue
-                    key_points.append(line)
-
-        return key_points
+        return self._extract_bulleted_section(
+            body,
+            [
+                r"key points?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
+                r"highlights?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
+                r"main topics?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)",
+            ],
+            min_line_length=11,
+        )
 
     def _extract_decisions(self, body: str) -> List[str]:
         """Extract decisions made during the meeting."""
-        decisions = []
-
-        pattern = r"decisions?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)"
-        match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
-
-        if match:
-            content = match.group(1)
-            lines = content.split("\n")
-            for line in lines:
-                line = line.strip()
-                if line and len(line) > 10:
-                    line = re.sub(r"^[-•*\d.)\]]\s*", "", line)
-                    if _is_garbage_line(line):
-                        continue
-                    decisions.append(line)
-
-        return decisions
+        return self._extract_bulleted_section(
+            body,
+            [r"decisions?[:\s]*(.+?)(?=\n\n[A-Z]|\Z)"],
+            min_line_length=11,
+        )
 
     def _extract_questions(self, body: str) -> List[str]:
         """Extract questions or open items."""
-        questions = []
-
-        pattern = r"(?:questions?|open items?)[:\s]*(.+?)(?=\n\n[A-Z]|\Z)"
-        match = re.search(pattern, body, re.IGNORECASE | re.DOTALL)
-
-        if match:
-            content = match.group(1)
-            lines = content.split("\n")
-            for line in lines:
-                line = line.strip()
-                if line and len(line) > 5:
-                    line = re.sub(r"^[-•*\d.)\]]\s*", "", line)
-                    if _is_garbage_line(line):
-                        continue
-                    questions.append(line)
-
-        return questions
+        return self._extract_bulleted_section(
+            body,
+            [r"(?:questions?|open items?)[:\s]*(.+?)(?=\n\n[A-Z]|\Z)"],
+            min_line_length=6,
+        )
 
     def _extract_owner(self, text: str) -> Optional[str]:
         """Extract owner/assignee from action item text."""

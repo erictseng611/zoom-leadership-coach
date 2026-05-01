@@ -2,19 +2,20 @@
 
 import logging
 import os
-import sys
-from datetime import datetime, timedelta
-from pathlib import Path
 import re
+import sys
+from datetime import datetime
+from pathlib import Path
 from email.utils import parsedate_to_datetime
 
 import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from .calendar_client import CalendarClient
+from .coach import LeadershipCoach
+from .constants import DEFAULT_TODO_DURATION_MINUTES
 from .gmail_client import GmailClient
 from .parser import MeetingSummaryParser
 from .scheduler import SchedulerSetup
@@ -36,64 +37,46 @@ console = Console()
 
 
 def get_coach():
-    """Get the appropriate coach instance based on configuration."""
-    use_bedrock = os.getenv("USE_BEDROCK", "false").lower() == "true"
-
-    if use_bedrock:
-        from .bedrock_coach import BedrockLeadershipCoach
-        return BedrockLeadershipCoach()
-    else:
-        from .coach import LeadershipCoach
-        return LeadershipCoach()
+    """Build a LeadershipCoach. Backend is selected by USE_BEDROCK env var."""
+    return LeadershipCoach()
 
 
 def parse_after_time(after_str: str) -> datetime:
     """
     Parse the --after time string into a datetime.
 
-    Supports formats:
-    - "2026-04-30 14:00"
-    - "today 9am"
-    - "today 2pm"
+    Accepts "YYYY-MM-DD", "YYYY-MM-DD HH:MM", and "today <HH:MM|HHam|HHpm>".
     """
-    after_str = after_str.strip().lower()
+    cleaned = after_str.strip().lower()
 
-    # Handle "today HH:MM" or "today HHam/pm"
-    if after_str.startswith("today"):
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        time_part = after_str.replace("today", "").strip()
+    if cleaned.startswith("today"):
+        today_midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        time_part = cleaned[len("today"):].strip()
+        for fmt in ("%I%p", "%I:%M%p", "%H:%M", "%H"):
+            try:
+                parsed_time = datetime.strptime(time_part, fmt).time()
+                return today_midnight.replace(
+                    hour=parsed_time.hour, minute=parsed_time.minute
+                )
+            except ValueError:
+                continue
+        raise ValueError(f"Could not parse time part of {after_str!r}")
 
-        # Parse time like "9am", "2pm", "14:00"
-        if "am" in time_part or "pm" in time_part:
-            # Parse 12-hour format
-            time_part = time_part.replace("am", "").replace("pm", "").strip()
-            hour = int(time_part)
-            if "pm" in after_str and hour != 12:
-                hour += 12
-            elif "am" in after_str and hour == 12:
-                hour = 0
-            return today.replace(hour=hour)
-        else:
-            # Parse 24-hour format like "14:00"
-            parts = time_part.split(":")
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-            return today.replace(hour=hour, minute=minute)
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
 
-    # Handle full datetime like "2026-04-30 14:00"
-    try:
-        return datetime.strptime(after_str, "%Y-%m-%d %H:%M")
-    except ValueError:
-        pass
+    raise ValueError(
+        f"Could not parse time: {after_str}\n"
+        "Supported formats: 'YYYY-MM-DD HH:MM', 'today 9am', 'today 14:00'"
+    )
 
-    # Try without time (assume 00:00)
-    try:
-        return datetime.strptime(after_str, "%Y-%m-%d")
-    except ValueError:
-        raise ValueError(
-            f"Could not parse time: {after_str}\n"
-            "Supported formats: 'YYYY-MM-DD HH:MM', 'today 9am', 'today 14:00'"
-        )
+
+def _slugify(title: str, max_length: int = 30) -> str:
+    """Turn a meeting title into a filesystem-safe slug."""
+    return re.sub(r"[^a-z0-9]+", "-", title[:max_length].lower()).strip("-") or "meeting"
 
 
 def _normalize_name(name: str) -> str:
@@ -155,7 +138,7 @@ def filter_emails_by_date(emails: list, cutoff_date: datetime) -> list:
 
             if email_date >= cutoff_date:
                 filtered.append(email)
-        except Exception as e:
+        except Exception:
             # If we can't parse the date, include it to be safe
             filtered.append(email)
 
@@ -169,7 +152,6 @@ def filter_emails_by_date(emails: list, cutoff_date: datetime) -> list:
 @click.option("--schedule", is_flag=True, help="Setup automated daily runs")
 @click.option("--unschedule", is_flag=True, help="Remove automated daily runs")
 @click.option("--run-time", default="20:00", help="Time for daily runs (HH:MM format)")
-@click.option("--mark-read", is_flag=True, help="Mark processed emails as read")
 @click.option("--after", help="Only process meetings after this time (format: 'YYYY-MM-DD HH:MM' or 'today 9am')")
 @click.option("--limit", type=int, help="Only process the first N emails")
 @click.option("--fast", is_flag=True, help="Use Claude Haiku for faster (cheaper, less deep) analysis")
@@ -182,7 +164,6 @@ def main(
     schedule: bool,
     unschedule: bool,
     run_time: str,
-    mark_read: bool,
     after: str,
     limit: int,
     fast: bool,
@@ -202,7 +183,7 @@ def main(
     log_level = "DEBUG" if verbose else "INFO"
     logger = setup_logging(log_level)
 
-    # --fast selects Haiku via env var read by BedrockLeadershipCoach
+    # --fast selects Haiku via env var read by the Bedrock provider
     if fast:
         os.environ["USE_FAST_MODEL"] = "true"
 
@@ -238,11 +219,11 @@ def main(
     # Run the main processing workflow
     try:
         if transcript:
-            process_transcript_file(transcript, mark_read, logger, auto_approve)
+            process_transcript_file(transcript, logger, auto_approve)
         elif zoom_meeting_id:
-            process_zoom_meeting(zoom_meeting_id, mark_read, logger, auto_approve)
+            process_zoom_meeting(zoom_meeting_id, logger, auto_approve)
         else:
-            process_gmail_summaries(mark_read, logger, after_time=after, limit=limit, auto_approve=auto_approve)
+            process_gmail_summaries(logger, after_time=after, limit=limit, auto_approve=auto_approve)
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted by user[/yellow]")
@@ -267,12 +248,12 @@ def run_setup():
     try:
         # Test Gmail authentication
         console.print("\n[cyan]Authenticating with Gmail...[/cyan]")
-        gmail_client = GmailClient()
+        GmailClient()
         console.print("[green]✓ Gmail authentication successful[/green]")
 
         # Test Calendar authentication
         console.print("\n[cyan]Authenticating with Google Calendar...[/cyan]")
-        calendar_client = CalendarClient()
+        CalendarClient()
         console.print("[green]✓ Calendar authentication successful[/green]")
 
         # Test Claude API (Anthropic or Bedrock)
@@ -282,7 +263,7 @@ def run_setup():
         else:
             console.print("\n[cyan]Testing Anthropic API...[/cyan]")
 
-        coach = get_coach()
+        get_coach()
 
         if use_bedrock:
             console.print("[green]✓ AWS Bedrock configured[/green]")
@@ -303,7 +284,7 @@ def run_setup():
                 "You can now run the application:\n"
                 "  python -m src.main\n\n"
                 "Or schedule daily runs:\n"
-                f"  python -m src.main --schedule --run-time 20:00",
+                "  python -m src.main --schedule --run-time 20:00",
                 title="Success",
                 style="green",
             )
@@ -317,180 +298,161 @@ def run_setup():
         sys.exit(1)
 
 
-def process_gmail_summaries(mark_read: bool, logger: logging.Logger, after_time: str = None, limit: int = None, auto_approve: bool = False):
+def process_gmail_summaries(
+    logger: logging.Logger,
+    after_time: str = None,
+    limit: int = None,
+    auto_approve: bool = False,
+):
     """Process Zoom summaries from Gmail."""
-    # Parse the after_time if provided
     cutoff_date = None
     if after_time:
         cutoff_date = parse_after_time(after_time)
-        console.print(f"[cyan]Filtering meetings after: {cutoff_date.strftime('%Y-%m-%d %H:%M')}[/cyan]")
+        console.print(
+            f"[cyan]Filtering meetings after: {cutoff_date.strftime('%Y-%m-%d %H:%M')}[/cyan]"
+        )
 
     console.print(
         Panel("Processing Zoom meeting summaries from Gmail", title="Zoom Coach")
     )
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        # Load processed emails tracking
-        processed_file = get_data_path("processed_emails.json")
-        processed_data = load_json(processed_file)
-        processed_ids = processed_data.get("processed_ids", [])
+    processed_file = get_data_path("processed_emails.json")
+    processed_ids = load_json(processed_file).get("processed_ids", [])
 
-        # Fetch emails
-        task = progress.add_task("Fetching emails from Gmail...", total=None)
-        gmail_client = GmailClient()
-        emails = gmail_client.get_latest_unprocessed_summaries(processed_ids)
-        progress.update(task, completed=True)
+    with console.status("[cyan]Fetching emails from Gmail...[/cyan]"):
+        emails = GmailClient().get_latest_unprocessed_summaries(processed_ids)
+    emails = _apply_email_filters(emails, cutoff_date, limit)
 
-        # Filter by after_time if specified
-        if cutoff_date:
-            emails = filter_emails_by_date(emails, cutoff_date)
-            console.print(f"[cyan]Filtered to {len(emails)} meeting(s) after cutoff[/cyan]")
+    if not emails:
+        console.print("[yellow]No new Zoom summaries found[/yellow]")
+        return
+    console.print(f"[green]Found {len(emails)} new meeting summary/summaries[/green]\n")
 
-        if limit is not None and limit > 0:
-            emails = emails[:limit]
-            console.print(f"[cyan]Limited to first {len(emails)} meeting(s)[/cyan]")
+    parser = MeetingSummaryParser()
+    calendar_client = CalendarClient()
+    coach = get_coach()
+    config = load_config()
 
-        if not emails:
-            console.print("[yellow]No new Zoom summaries found[/yellow]")
-            return
-
-        console.print(f"[green]Found {len(emails)} new meeting summary/summaries[/green]\n")
-
-        # Initialize clients
-        parser = MeetingSummaryParser()
-        calendar_client = CalendarClient()
-        coach = get_coach()
-
-        # Compute availability once — it doesn't change between meetings in a batch
-        task = progress.add_task("Checking calendar availability...", total=None)
+    with console.status("[cyan]Checking calendar availability...[/cyan]"):
         available_slots = calendar_client.find_available_slots(
-            duration_minutes=30,
+            duration_minutes=DEFAULT_TODO_DURATION_MINUTES,
             days_ahead=14,
-            preferred_times=load_config()["scheduling"]["preferred_focus_times"],
+            preferred_times=config["scheduling"]["preferred_focus_times"],
         )
-        progress.update(task, completed=True)
-        console.print(f"[cyan]Available slots: {len(available_slots)}[/cyan]")
+    console.print(f"[cyan]Available slots: {len(available_slots)}[/cyan]")
 
-        # Process each email
-        for i, email in enumerate(emails, 1):
-            console.print(f"\n[bold cyan]Processing meeting {i}/{len(emails)}[/bold cyan]")
-
-            # Parse meeting
-            task = progress.add_task("Parsing meeting summary...", total=None)
-            meeting_data = parser.parse(email["body"], email["subject"])
-            progress.update(task, completed=True)
-
-            console.print(f"  Meeting: {meeting_data['title']}")
-
-            # Drop personal action items from the payload entirely — they
-            # shouldn't appear in the coach prompt, the report, or calendar.
-            cfg = load_config()
-            todo_cfg = cfg.get("todos", {})
-            if todo_cfg.get("skip_personal", True):
-                work_items, personal_items = strip_personal_items(
-                    meeting_data["action_items"],
-                    todo_cfg.get("personal_keywords", []),
-                )
-                meeting_data["action_items"] = work_items
-                if personal_items:
-                    console.print(
-                        f"  [dim]Stripped {len(personal_items)} personal item(s) "
-                        f"from analysis[/dim]"
-                    )
-
-            # Get AI coaching analysis
-            task = progress.add_task("Analyzing meeting with AI coach...", total=None)
-            analysis = coach.analyze_meeting(meeting_data, available_slots)
-            progress.update(task, completed=True)
-
-            # Save coaching report
-            report_date = datetime.now().strftime("%Y-%m-%d_%H-%M")
-            # Sanitize meeting title for filename (remove invalid characters)
-            meeting_slug = meeting_data["title"][:30].replace(" ", "-").replace("/", "-").replace(":", "-").replace("[", "").replace("]", "").lower()
-            report_path = (
-                get_data_path("coaching_reports")
-                / f"{report_date}_{meeting_slug}.md"
-            )
-            coach.generate_coaching_report(analysis, str(report_path))
-
-            console.print(f"  [green]✓ Coaching report saved: {report_path.name}[/green]")
-
-            # Create calendar todos only for the user's own work-related items.
-            # Personal items were already stripped above, so only owner filter runs here.
-            if meeting_data["action_items"]:
-                user_cfg = cfg.get("user", {})
-                user_names = [user_cfg.get("name", "")] + list(user_cfg.get("aliases", []))
-
-                kept, not_mine = filter_todo_candidates(
-                    meeting_data["action_items"],
-                    user_names=user_names,
-                )
-
-                if not_mine:
-                    console.print(
-                        f"  [dim]Skipped {len(not_mine)} item(s) owned by others[/dim]"
-                    )
-
-                if kept:
-                    todos_for_calendar = [
-                        {
-                            "title": item["task"],
-                            "description": f"From meeting: {meeting_data['title']}\n"
-                            f"Owner: {item.get('owner', 'Not assigned')}\n"
-                            f"Due: {item.get('due_date', 'Not specified')}",
-                            "priority": item.get("priority", "medium"),
-                            "duration_minutes": 30,
-                        }
-                        for item in kept
-                    ]
-
-                    if auto_approve:
-                        # Legacy mode: automatically create todos
-                        task = progress.add_task("Creating calendar todos...", total=None)
-                        created_ids = calendar_client.batch_create_todos(
-                            todos_for_calendar, available_slots
-                        )
-                        progress.update(task, completed=True)
-                        console.print(
-                            f"  [green]✓ Created {len(created_ids)} todo item(s) in calendar[/green]"
-                        )
-                    else:
-                        # New mode: interactive approval workflow
-                        console.print(
-                            f"\n[cyan]Found {len(kept)} action item(s) to review[/cyan]"
-                        )
-                        approval_workflow = TodoApprovalWorkflow(calendar_client)
-                        created_ids = approval_workflow.approve_todos(
-                            todos_for_calendar,
-                            available_slots,
-                            meeting_data["title"],
-                        )
-                else:
-                    console.print(
-                        "  [yellow]No user-owned work items to schedule[/yellow]"
-                    )
-
-            # Mark as processed
-            processed_ids.append(email["id"])
-
-        # Save processed IDs
-        save_json({"processed_ids": processed_ids, "last_run": datetime.now().isoformat()}, processed_file)
-
+    for i, email in enumerate(emails, 1):
         console.print(
-            Panel(
-                f"✓ Processed {len(emails)} meeting(s)\n\n"
-                f"Coaching reports saved to: {get_data_path('coaching_reports')}",
-                title="Complete",
-                style="green",
+            f"\n[bold cyan]Processing meeting {i}/{len(emails)}[/bold cyan]"
+        )
+        _process_one_email(
+            email=email,
+            parser=parser,
+            coach=coach,
+            calendar_client=calendar_client,
+            available_slots=available_slots,
+            config=config,
+            auto_approve=auto_approve,
+        )
+        processed_ids.append(email["id"])
+
+    save_json(
+        {"processed_ids": processed_ids, "last_run": datetime.now().isoformat()},
+        processed_file,
+    )
+    console.print(
+        Panel(
+            f"✓ Processed {len(emails)} meeting(s)\n\n"
+            f"Coaching reports saved to: {get_data_path('coaching_reports')}",
+            title="Complete",
+            style="green",
+        )
+    )
+
+
+def _apply_email_filters(emails, cutoff_date, limit):
+    if cutoff_date:
+        emails = filter_emails_by_date(emails, cutoff_date)
+        console.print(
+            f"[cyan]Filtered to {len(emails)} meeting(s) after cutoff[/cyan]"
+        )
+    if limit is not None and limit > 0:
+        emails = emails[:limit]
+        console.print(f"[cyan]Limited to first {len(emails)} meeting(s)[/cyan]")
+    return emails
+
+
+def _process_one_email(
+    email, parser, coach, calendar_client, available_slots, config, auto_approve
+):
+    meeting_data = parser.parse(email["body"], email["subject"])
+    console.print(f"  Meeting: {meeting_data['title']}")
+
+    # Drop personal items before they hit the coach prompt, report, or calendar.
+    todo_cfg = config.get("todos", {})
+    if todo_cfg.get("skip_personal", True):
+        work_items, personal_items = strip_personal_items(
+            meeting_data["action_items"],
+            todo_cfg.get("personal_keywords", []),
+        )
+        meeting_data["action_items"] = work_items
+        if personal_items:
+            console.print(
+                f"  [dim]Stripped {len(personal_items)} personal item(s) from analysis[/dim]"
             )
+
+    with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]"):
+        analysis = coach.analyze_meeting(meeting_data, available_slots)
+
+    report_path = (
+        get_data_path("coaching_reports")
+        / f"{datetime.now().strftime('%Y-%m-%d_%H-%M')}_{_slugify(meeting_data['title'])}.md"
+    )
+    coach.generate_coaching_report(analysis, str(report_path))
+    console.print(f"  [green]✓ Coaching report saved: {report_path.name}[/green]")
+
+    if not meeting_data["action_items"]:
+        return
+
+    user_cfg = config.get("user", {})
+    user_names = [user_cfg.get("name", "")] + list(user_cfg.get("aliases", []))
+    kept, not_mine = filter_todo_candidates(meeting_data["action_items"], user_names=user_names)
+
+    if not_mine:
+        console.print(f"  [dim]Skipped {len(not_mine)} item(s) owned by others[/dim]")
+
+    if not kept:
+        console.print("  [yellow]No user-owned work items to schedule[/yellow]")
+        return
+
+    todos_for_calendar = [
+        {
+            "title": item["task"],
+            "description": (
+                f"From meeting: {meeting_data['title']}\n"
+                f"Owner: {item.get('owner', 'Not assigned')}\n"
+                f"Due: {item.get('due_date', 'Not specified')}"
+            ),
+            "priority": item.get("priority", "medium"),
+            "duration_minutes": DEFAULT_TODO_DURATION_MINUTES,
+        }
+        for item in kept
+    ]
+
+    if auto_approve:
+        with console.status("[cyan]Creating calendar todos...[/cyan]"):
+            created_ids = calendar_client.batch_create_todos(todos_for_calendar, available_slots)
+        console.print(
+            f"  [green]✓ Created {len(created_ids)} todo item(s) in calendar[/green]"
+        )
+    else:
+        console.print(f"\n[cyan]Found {len(kept)} action item(s) to review[/cyan]")
+        TodoApprovalWorkflow(calendar_client).approve_todos(
+            todos_for_calendar, available_slots, meeting_data["title"]
         )
 
 
-def process_transcript_file(file_path: str, mark_read: bool, logger: logging.Logger, auto_approve: bool = False):
+def process_transcript_file(file_path: str, logger: logging.Logger, auto_approve: bool = False):
     """Process a transcript from a file."""
     console.print(f"[cyan]Processing transcript file: {file_path}[/cyan]")
 
@@ -532,7 +494,7 @@ def process_transcript_file(file_path: str, mark_read: bool, logger: logging.Log
     console.print(f"[green]✓ Coaching report saved: {report_path}[/green]")
 
 
-def process_zoom_meeting(meeting_id: str, mark_read: bool, logger: logging.Logger, auto_approve: bool = False):
+def process_zoom_meeting(meeting_id: str, logger: logging.Logger, auto_approve: bool = False):
     """Process a specific Zoom meeting by ID."""
     console.print(f"[cyan]Fetching Zoom meeting: {meeting_id}[/cyan]")
 
@@ -547,7 +509,7 @@ def process_zoom_meeting(meeting_id: str, mark_read: bool, logger: logging.Logge
         return
 
     # Process as transcript file
-    process_transcript_file(transcript, mark_read, logger, auto_approve)
+    process_transcript_file(transcript, logger, auto_approve)
 
 
 if __name__ == "__main__":

@@ -2,70 +2,23 @@
 
 import base64
 import logging
-import os.path
-import pickle
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from .utils import get_credentials_path, load_config
+from .utils import get_google_credentials, load_config
 
 logger = logging.getLogger("zoom_coach")
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar"
-]
 
 
 class GmailClient:
     """Client for interacting with Gmail API."""
 
     def __init__(self):
-        """Initialize Gmail client."""
         self.config = load_config()["gmail"]
-        self.service = None
-        self._authenticate()
-
-    def _authenticate(self) -> None:
-        """Authenticate with Gmail API using OAuth2."""
-        credentials = None
-        token_path = get_credentials_path("token.pickle")
-        credentials_path = get_credentials_path("google_credentials.json")
-
-        # Load existing token if available
-        if token_path.exists():
-            with open(token_path, "rb") as token:
-                credentials = pickle.load(token)
-
-        # If no valid credentials, request authorization
-        if not credentials or not credentials.valid:
-            if credentials and credentials.expired and credentials.refresh_token:
-                logger.info("Refreshing expired credentials...")
-                credentials.refresh(Request())
-            else:
-                if not credentials_path.exists():
-                    raise FileNotFoundError(
-                        f"Google credentials not found at {credentials_path}. "
-                        "Please download OAuth2 credentials from Google Cloud Console."
-                    )
-
-                logger.info("Starting OAuth2 flow...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(credentials_path), SCOPES
-                )
-                credentials = flow.run_local_server(port=0)
-
-            # Save credentials for future use
-            with open(token_path, "wb") as token:
-                pickle.dump(credentials, token)
-
-        self.service = build("gmail", "v1", credentials=credentials)
+        self.service = build("gmail", "v1", credentials=get_google_credentials())
         logger.info("Gmail authentication successful")
 
     def fetch_zoom_summaries(

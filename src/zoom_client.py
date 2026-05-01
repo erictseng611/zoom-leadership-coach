@@ -2,7 +2,6 @@
 
 import logging
 import os
-import time
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -42,7 +41,7 @@ class ZoomClient:
 
         try:
             response = requests.post(
-                f"https://zoom.us/oauth/token",
+                "https://zoom.us/oauth/token",
                 params={
                     "grant_type": "account_credentials",
                     "account_id": self.account_id,
@@ -148,58 +147,3 @@ class ZoomClient:
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching transcript for meeting {meeting_id}: {e}")
             return None
-
-    def search_meetings(
-        self,
-        user_id: str = "me",
-        from_date: Optional[datetime] = None,
-        to_date: Optional[datetime] = None,
-    ) -> list:
-        """
-        Search for meetings in a date range.
-
-        Args:
-            user_id: Zoom user ID (default: "me")
-            from_date: Start date (default: 7 days ago)
-            to_date: End date (default: now)
-
-        Returns:
-            List of meeting dictionaries
-        """
-        if not self._ensure_authenticated():
-            logger.error("Zoom API not authenticated")
-            return []
-
-        if from_date is None:
-            from_date = datetime.now() - timedelta(days=7)
-        if to_date is None:
-            to_date = datetime.now()
-
-        headers = {"Authorization": f"Bearer {self.access_token}"}
-
-        try:
-            params = {
-                "from": from_date.strftime("%Y-%m-%d"),
-                "to": to_date.strftime("%Y-%m-%d"),
-                "type": "past",
-                "page_size": 30,
-            }
-
-            response = requests.get(
-                f"https://api.zoom.us/v2/users/{user_id}/meetings",
-                headers=headers,
-                params=params,
-                timeout=10,
-            )
-
-            response.raise_for_status()
-            data = response.json()
-
-            meetings = data.get("meetings", [])
-            logger.info(f"Found {len(meetings)} meetings in date range")
-
-            return meetings
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error searching meetings: {e}")
-            return []

@@ -1,13 +1,20 @@
 """Interactive approval workflow for calendar todos."""
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
+
+from .constants import (
+    DEFAULT_TODO_DURATION_MINUTES,
+    SLOT_GRANULARITY_MINUTES,
+    priority_emoji,
+    priority_sort_key,
+)
 
 logger = logging.getLogger("zoom_coach")
 console = Console()
@@ -54,11 +61,7 @@ class TodoApprovalWorkflow:
             )
         )
 
-        # Sort todos by priority
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        sorted_todos = sorted(
-            todos, key=lambda x: priority_order.get(x.get("priority", "medium"), 1)
-        )
+        sorted_todos = sorted(todos, key=priority_sort_key)
 
         approved_events = []
         slot_index = 0
@@ -94,7 +97,7 @@ class TodoApprovalWorkflow:
                 title=edited_todo["title"],
                 description=edited_todo["description"],
                 suggested_time=edited_slot,
-                duration_minutes=edited_todo.get("duration_minutes", 30),
+                duration_minutes=edited_todo.get("duration_minutes", DEFAULT_TODO_DURATION_MINUTES),
                 priority=edited_todo.get("priority", "medium"),
             )
 
@@ -102,9 +105,9 @@ class TodoApprovalWorkflow:
                 approved_events.append(event_id)
                 self.console.print("[green]✓ Calendar event created[/green]")
 
-                # Update slot index with buffer
                 buffer_slots = (
-                    self.calendar_client.config["buffer_minutes_between_tasks"] // 30
+                    self.calendar_client.config["buffer_minutes_between_tasks"]
+                    // SLOT_GRANULARITY_MINUTES
                 )
                 # Find the index of the used slot and advance
                 if edited_slot in available_slots:
@@ -141,14 +144,14 @@ class TodoApprovalWorkflow:
         table.add_column("Field", style="cyan")
         table.add_column("Value")
 
-        priority_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(
-            todo.get("priority", "medium"), "⚪"
-        )
+        priority = todo.get("priority", "medium")
 
         table.add_row("Title", todo["title"])
         table.add_row("Description", todo.get("description", ""))
-        table.add_row("Priority", f"{priority_emoji} {todo.get('priority', 'medium').upper()}")
-        table.add_row("Duration", f"{todo.get('duration_minutes', 30)} minutes")
+        table.add_row("Priority", f"{priority_emoji(priority)} {priority.upper()}")
+        table.add_row(
+            "Duration", f"{todo.get('duration_minutes', DEFAULT_TODO_DURATION_MINUTES)} minutes"
+        )
         table.add_row(
             "Suggested Time",
             suggested_slot.strftime("%A, %B %d at %I:%M %p"),
@@ -224,7 +227,7 @@ class TodoApprovalWorkflow:
         edited["priority"] = new_priority
 
         # Edit duration
-        current_duration = todo.get("duration_minutes", 30)
+        current_duration = todo.get("duration_minutes", DEFAULT_TODO_DURATION_MINUTES)
         new_duration = IntPrompt.ask(
             "Duration (minutes)",
             default=current_duration,

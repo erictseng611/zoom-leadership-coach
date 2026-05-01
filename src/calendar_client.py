@@ -1,69 +1,34 @@
 """Google Calendar API client for creating events and todos."""
 
 import logging
-import pickle
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from .utils import get_credentials_path, load_config
+from .constants import (
+    DEFAULT_TODO_DURATION_MINUTES,
+    MIN_LEAD_TIME_MINUTES,
+    SLOT_GRANULARITY_MINUTES,
+    priority_emoji,
+    priority_sort_key,
+)
+from .utils import get_google_credentials, load_config
 
 logger = logging.getLogger("zoom_coach")
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar"
-]
+CALENDAR_TIMEZONE = "America/Los_Angeles"
 
 
 class CalendarClient:
     """Client for interacting with Google Calendar API."""
 
     def __init__(self):
-        """Initialize Calendar client."""
-        self.config = load_config()["calendar"]
-        self.scheduling_config = load_config()["scheduling"]
-        self.service = None
-        self._authenticate()
-
-    def _authenticate(self) -> None:
-        """Authenticate with Google Calendar API using OAuth2."""
-        credentials = None
-        token_path = get_credentials_path("token.pickle")
-        credentials_path = get_credentials_path("google_credentials.json")
-
-        # Load existing token if available
-        if token_path.exists():
-            with open(token_path, "rb") as token:
-                credentials = pickle.load(token)
-
-        # If no valid credentials, request authorization
-        if not credentials or not credentials.valid:
-            if credentials and credentials.expired and credentials.refresh_token:
-                logger.info("Refreshing expired credentials...")
-                credentials.refresh(Request())
-            else:
-                if not credentials_path.exists():
-                    raise FileNotFoundError(
-                        f"Google credentials not found at {credentials_path}"
-                    )
-
-                logger.info("Starting OAuth2 flow...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(credentials_path), SCOPES
-                )
-                credentials = flow.run_local_server(port=0)
-
-            # Save credentials for future use
-            with open(token_path, "wb") as token:
-                pickle.dump(credentials, token)
-
-        self.service = build("calendar", "v3", credentials=credentials)
+        config = load_config()
+        self.config = config["calendar"]
+        self.scheduling_config = config["scheduling"]
+        self.service = build("calendar", "v3", credentials=get_google_credentials())
         logger.info("Calendar authentication successful")
 
     def get_free_busy(
@@ -127,9 +92,8 @@ class CalendarClient:
         end_time = start_time + timedelta(days=days_ahead)
 
         busy_periods = self.get_free_busy(start_time, end_time)
-        # Treat "now + 15 min" as the earliest schedulable moment so we don't
-        # try to put a TODO in the past (or three minutes from now).
-        earliest = now + timedelta(minutes=15)
+        # Avoid scheduling in the immediate past/near-future — see MIN_LEAD_TIME_MINUTES.
+        earliest = now + timedelta(minutes=MIN_LEAD_TIME_MINUTES)
 
         available_slots = []
         current_day = start_time
@@ -166,14 +130,14 @@ class CalendarClient:
 
                 # Never schedule in the past
                 if current_slot < earliest:
-                    current_slot += timedelta(minutes=30)
+                    current_slot += timedelta(minutes=SLOT_GRANULARITY_MINUTES)
                     continue
 
                 # Skip lunch break
                 if not (
                     current_slot.time() >= lunch_end or slot_end.time() <= lunch_start
                 ):
-                    current_slot += timedelta(minutes=30)
+                    current_slot += timedelta(minutes=SLOT_GRANULARITY_MINUTES)
                     continue
 
                 # Check if slot overlaps with busy periods
@@ -206,7 +170,7 @@ class CalendarClient:
                     else:
                         available_slots.append(current_slot)
 
-                current_slot += timedelta(minutes=30)
+                current_slot += timedelta(minutes=SLOT_GRANULARITY_MINUTES)
 
         return available_slots
 
@@ -239,11 +203,11 @@ class CalendarClient:
             "description": description,
             "start": {
                 "dateTime": start_time.isoformat(),
-                "timeZone": "America/Los_Angeles",  # TODO: Make configurable
+                "timeZone": CALENDAR_TIMEZONE,
             },
             "end": {
                 "dateTime": end_time.isoformat(),
-                "timeZone": "America/Los_Angeles",
+                "timeZone": CALENDAR_TIMEZONE,
             },
             "reminders": {
                 "useDefault": False,
@@ -269,29 +233,12 @@ class CalendarClient:
         title: str,
         description: str,
         suggested_time: datetime,
-        duration_minutes: int = 30,
+        duration_minutes: int = DEFAULT_TODO_DURATION_MINUTES,
         priority: str = "medium",
     ) -> Optional[str]:
-        """
-        Create a todo item as a calendar event.
-
-        Args:
-            title: Todo title
-            description: Todo description
-            suggested_time: Suggested time to complete
-            duration_minutes: Estimated duration
-            priority: Priority level (high, medium, low)
-
-        Returns:
-            Event ID if successful, None otherwise
-        """
-        priority_emoji = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(
-            priority, "⚪"
-        )
-
-        summary = f"{priority_emoji} TODO: {title}"
+        """Create a TODO as a calendar event."""
+        summary = f"{priority_emoji(priority)} TODO: {title}"
         full_description = f"Priority: {priority.upper()}\n\n{description}"
-
         return self.create_event(
             summary=summary,
             description=full_description,
@@ -313,11 +260,9 @@ class CalendarClient:
             List of created event IDs
         """
         created_ids = []
-
-        # Sort todos by priority (high -> medium -> low)
-        priority_order = {"high": 0, "medium": 1, "low": 2}
-        sorted_todos = sorted(
-            todos, key=lambda x: priority_order.get(x.get("priority", "medium"), 1)
+        sorted_todos = sorted(todos, key=priority_sort_key)
+        buffer_slots = (
+            self.config["buffer_minutes_between_tasks"] // SLOT_GRANULARITY_MINUTES
         )
 
         slot_index = 0
@@ -330,16 +275,12 @@ class CalendarClient:
                 title=todo["title"],
                 description=todo.get("description", ""),
                 suggested_time=available_slots[slot_index],
-                duration_minutes=todo.get("duration_minutes", 30),
+                duration_minutes=todo.get("duration_minutes", DEFAULT_TODO_DURATION_MINUTES),
                 priority=todo.get("priority", "medium"),
             )
 
             if event_id:
                 created_ids.append(event_id)
-                # Add buffer between tasks
-                buffer_slots = (
-                    self.config["buffer_minutes_between_tasks"] // 30
-                )
                 slot_index += 1 + buffer_slots
             else:
                 slot_index += 1

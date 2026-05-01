@@ -120,8 +120,8 @@ class SchedulerSetup:
         process.communicate(input=new_crontab)
 
         logger.info(f"✓ Scheduled daily runs at {self.run_time} via cron")
-        logger.info(f"  To view: crontab -l")
-        logger.info(f"  To edit: crontab -e")
+        logger.info("  To view: crontab -l")
+        logger.info("  To edit: crontab -e")
 
         return True
 

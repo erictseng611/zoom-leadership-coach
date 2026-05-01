@@ -2,8 +2,7 @@
 
 import json
 import logging
-import os
-from datetime import datetime
+import pickle
 from pathlib import Path
 from typing import Any, Dict
 
@@ -11,6 +10,13 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 console = Console()
+
+# Shared Google OAuth scopes for Gmail + Calendar. Both clients reuse the same
+# token.pickle, so the scope set is combined rather than per-client.
+GOOGLE_OAUTH_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar",
+]
 
 
 def setup_logging(level: str = "INFO") -> logging.Logger:
@@ -75,21 +81,54 @@ def get_data_path(filename: str) -> Path:
     return get_project_root() / "data" / filename
 
 
-def format_datetime(dt: datetime, format_str: str = "%Y-%m-%d %H:%M") -> str:
-    """Format datetime object."""
-    return dt.strftime(format_str)
-
-
 def ensure_directories() -> None:
     """Ensure all required directories exist."""
     root = get_project_root()
-    directories = [
+    for directory in [
         root / "credentials",
         root / "data",
         root / "data" / "coaching_reports",
         root / "data" / "todos",
         root / "logs",
-    ]
-
-    for directory in directories:
+    ]:
         directory.mkdir(parents=True, exist_ok=True)
+
+
+def get_google_credentials():
+    """Load or refresh shared Google OAuth credentials for Gmail + Calendar."""
+    from google.auth.transport.requests import Request
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    logger = logging.getLogger("zoom_coach")
+    token_path = get_credentials_path("token.pickle")
+    credentials_path = get_credentials_path("google_credentials.json")
+
+    credentials = None
+    if token_path.exists():
+        with open(token_path, "rb") as token:
+            credentials = pickle.load(token)
+
+    if credentials and credentials.valid:
+        return credentials
+
+    if credentials and credentials.expired and credentials.refresh_token:
+        logger.info("Refreshing expired Google credentials...")
+        credentials.refresh(Request())
+    else:
+        if not credentials_path.exists():
+            raise FileNotFoundError(
+                f"Google credentials not found at {credentials_path}. "
+                "Please download OAuth2 credentials from Google Cloud Console."
+            )
+        logger.info("Starting OAuth2 flow...")
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(credentials_path), GOOGLE_OAUTH_SCOPES
+        )
+        credentials = flow.run_local_server(port=0)
+
+    with open(token_path, "wb") as token:
+        pickle.dump(credentials, token)
+
+    return credentials
+
+
