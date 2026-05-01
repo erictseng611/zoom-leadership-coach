@@ -28,9 +28,15 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill in your keys.
 
-### 3. Customize leadership principles
+### 3. Create your leadership principles
 
-Edit `config/leadership_principles.md` with your own framework.
+This file is your brief to the AI coach — the more specific, the better the coaching.
+
+```bash
+python -m src.main --init-principles
+```
+
+This copies `config/leadership_principles.template.md` to `config/leadership_principles.md` (gitignored, per-user). Open the file in your editor and follow the inline instructions to customize it.
 
 ### 4. Run initial auth
 
@@ -38,7 +44,7 @@ Edit `config/leadership_principles.md` with your own framework.
 python -m src.main --setup
 ```
 
-This opens a browser to authorize Google API access.
+This opens a browser to authorize Google API access. It will also prompt to create your principles file if you skipped step 3.
 
 ## Usage
 

@@ -15,6 +15,10 @@ data/processed_emails.json
 data/coaching_reports/*.md
 data/todos/*.json
 
+# Personal leadership principles — each user customizes their own.
+# The template file (leadership_principles.template.md) stays tracked.
+config/leadership_principles.md
+
 # IDE
 .vscode/
 .idea/

@@ -16,6 +16,7 @@ import click
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
+from rich.prompt import Confirm
 
 from .calendar_client import CalendarClient
 from .coach import LeadershipCoach
@@ -23,7 +24,13 @@ from . import pipeline
 from .gmail_client import GmailClient
 from .scheduler import SchedulerSetup
 from .todo_approval import TodoApprovalWorkflow
-from .utils import ensure_directories, get_data_path, setup_logging
+from .utils import (
+    ensure_directories,
+    get_data_path,
+    get_leadership_principles_path,
+    initialize_leadership_principles,
+    setup_logging,
+)
 from .zoom_client import ZoomClient
 
 load_dotenv()
@@ -75,6 +82,7 @@ def _slugify(title: str, max_length: int = 30) -> str:
 
 @click.command()
 @click.option("--setup", is_flag=True, help="Run initial setup and authentication")
+@click.option("--init-principles", is_flag=True, help="Create config/leadership_principles.md from the template")
 @click.option("--transcript", type=click.Path(exists=True), help="Process a transcript file directly")
 @click.option("--zoom-meeting-id", help="Fetch and process a specific Zoom meeting")
 @click.option("--schedule", is_flag=True, help="Setup automated daily runs")
@@ -87,6 +95,7 @@ def _slugify(title: str, max_length: int = 30) -> str:
 @click.option("--auto-approve", is_flag=True, help="Automatically create calendar events without approval (legacy mode)")
 def main(
     setup: bool,
+    init_principles: bool,
     transcript: str,
     zoom_meeting_id: str,
     schedule: bool,
@@ -121,6 +130,10 @@ def main(
     # Handle setup mode
     if setup:
         run_setup()
+        return
+
+    if init_principles:
+        init_principles_file()
         return
 
     # Handle scheduling
@@ -162,6 +175,73 @@ def main(
         sys.exit(1)
 
 
+def init_principles_file():
+    """Bootstrap config/leadership_principles.md from the template."""
+    target = get_leadership_principles_path()
+
+    if target.exists():
+        console.print(
+            Panel(
+                f"Your leadership principles already exist at:\n  {target}\n\n"
+                "To start over, delete the file first — I won't overwrite by default.",
+                title="Leadership Principles",
+                style="yellow",
+            )
+        )
+        return
+
+    try:
+        path = initialize_leadership_principles()
+    except Exception as e:
+        console.print(f"[red]Could not create principles file: {e}[/red]")
+        sys.exit(1)
+
+    console.print(
+        Panel(
+            f"✓ Created {path}\n\n"
+            "This file is your brief to the AI coach. Open it in your editor and\n"
+            "customize it with your own values, frameworks, and growth edges.\n\n"
+            "The template has inline instructions to guide you. The more specific\n"
+            "and personal your edits, the better the coaching will be.\n\n"
+            "When you're done, run: python -m src.main",
+            title="Leadership Principles",
+            style="green",
+        )
+    )
+
+
+def _ensure_leadership_principles() -> bool:
+    """During setup, offer to create the personal principles file if missing.
+
+    Returns True if the file exists (already or after creation), False if the
+    user declined to create one.
+    """
+    target = get_leadership_principles_path()
+    if target.exists():
+        console.print("[green]✓ Leadership principles found[/green]")
+        return True
+
+    console.print(
+        "\n[yellow]No personal leadership principles file found.[/yellow]\n"
+        "This file is what makes the coaching personal — without it the coach\n"
+        "only has generic advice to give."
+    )
+    if not Confirm.ask("Create one from the template now?", default=True):
+        console.print(
+            "[dim]Skipped. You can create it later with: "
+            "python -m src.main --init-principles[/dim]"
+        )
+        return False
+
+    path = initialize_leadership_principles()
+    console.print(f"[green]✓ Created {path}[/green]")
+    console.print(
+        "[cyan]Open that file in your editor and customize it before your "
+        "first real run.[/cyan]"
+    )
+    return True
+
+
 def run_setup():
     """Run initial setup and authentication."""
     console.print(
@@ -174,6 +254,10 @@ def run_setup():
     )
 
     try:
+        # Leadership principles (personal, per-user)
+        console.print("\n[cyan]Checking leadership principles...[/cyan]")
+        _ensure_leadership_principles()
+
         # Test Gmail authentication
         console.print("\n[cyan]Authenticating with Gmail...[/cyan]")
         GmailClient()
@@ -209,7 +293,8 @@ def run_setup():
         console.print(
             Panel(
                 "✓ Setup complete!\n\n"
-                "You can now run the application:\n"
+                f"Customize your coaching brief:\n  {get_leadership_principles_path()}\n\n"
+                "Then run the application:\n"
                 "  python -m src.main\n\n"
                 "Or schedule daily runs:\n"
                 "  python -m src.main --schedule --run-time 20:00",

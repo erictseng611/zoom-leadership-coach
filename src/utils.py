@@ -45,14 +45,48 @@ def load_config(config_name: str = "settings") -> Dict[str, Any]:
         return json.load(f)
 
 
+def get_leadership_principles_path() -> Path:
+    """Path to the user's personal (gitignored) leadership principles file."""
+    return get_project_root() / "config" / "leadership_principles.md"
+
+
+def get_leadership_principles_template_path() -> Path:
+    """Path to the tracked template users copy from on first run."""
+    return get_project_root() / "config" / "leadership_principles.template.md"
+
+
 def load_leadership_principles() -> str:
     """Load leadership principles from markdown file."""
-    principles_path = get_project_root() / "config" / "leadership_principles.md"
+    principles_path = get_leadership_principles_path()
     if not principles_path.exists():
-        raise FileNotFoundError(f"Leadership principles file not found: {principles_path}")
+        raise FileNotFoundError(
+            f"Leadership principles file not found: {principles_path}\n"
+            "Run `python -m src.main --init-principles` to create one from the template."
+        )
 
     with open(principles_path, "r") as f:
         return f.read()
+
+
+def initialize_leadership_principles(force: bool = False) -> Path:
+    """Copy the template to the user's personal principles path. Returns the path."""
+    import shutil
+
+    target = get_leadership_principles_path()
+    template = get_leadership_principles_template_path()
+
+    if not template.exists():
+        raise FileNotFoundError(
+            f"Template not found at {template}. Re-pull from source repo."
+        )
+    if target.exists() and not force:
+        raise FileExistsError(
+            f"{target} already exists. Pass force=True to overwrite."
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(template, target)
+    return target
 
 
 def save_json(data: Dict[str, Any], filepath: Path) -> None:
