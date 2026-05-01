@@ -404,6 +404,15 @@ def _process_one_email(
     with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]"):
         analysis = coach.analyze_meeting(meeting_data, available_slots)
 
+    if analysis.get("error"):
+        console.print(
+            f"  [red]✗ Coaching analysis failed: {analysis['error']}[/red]"
+        )
+        console.print(
+            "  [yellow]Skipping report and todo scheduling for this meeting.[/yellow]"
+        )
+        return
+
     report_path = (
         get_data_path("coaching_reports")
         / f"{datetime.now().strftime('%Y-%m-%d_%H-%M')}_{_slugify(meeting_data['title'])}.md"
