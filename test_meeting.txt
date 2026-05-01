@@ -1,0 +1,24 @@
+Team Sync - Q2 Planning
+
+Participants: Alice (Product Manager), Bob (Engineering Lead), Carol (Designer)
+
+Summary:
+We discussed Q2 roadmap priorities and decided to focus on the payment integration feature
+over the reporting dashboard. The team raised concerns about technical debt but agreed the
+payment feature is more urgent for business needs. We'll revisit the dashboard in Q3.
+
+Action Items:
+- Alice: Draft product requirements document for payment integration (Due: Friday)
+- Bob: Create technical design proposal and identify any blockers (Due: Next Monday)
+- Carol: Design user flows for payment screens (Due: Next week)
+- Alice: Schedule follow-up with stakeholders to present approach (Due: ASAP)
+
+Decisions:
+- Prioritize payment integration as Q2 focus
+- Defer reporting dashboard to Q3
+- Weekly check-ins every Monday at 2pm starting next week
+
+Questions:
+- Do we have API access to the payment provider yet?
+- What's the timeline for security review?
+- Should we coordinate with the mobile team on this?

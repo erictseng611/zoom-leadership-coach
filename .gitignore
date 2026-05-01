@@ -1,0 +1,27 @@
+# Environment
+venv/
+.venv/
+*.pyc
+__pycache__/
+.env
+
+# Credentials
+credentials/*.json
+credentials/*.pickle
+credentials/token.pickle
+
+# Data
+data/processed_emails.json
+data/coaching_reports/*.md
+data/todos/*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+logs/

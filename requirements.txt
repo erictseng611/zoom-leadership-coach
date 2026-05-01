@@ -1,0 +1,25 @@
+# Google API clients
+google-auth>=2.35.0
+google-auth-oauthlib>=1.2.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.122.0
+
+# Anthropic Claude API
+anthropic>=0.45.0
+
+# AWS Bedrock (optional - for Bedrock access)
+boto3>=1.35.0
+
+# Zoom API (optional)
+requests>=2.32.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-dateutil>=2.9.0
+
+# CLI
+click>=8.1.0
+rich>=13.7.0
+
+# Data processing
+pydantic>=2.10.0

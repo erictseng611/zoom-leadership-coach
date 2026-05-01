@@ -1,0 +1,66 @@
+{
+  "user": {
+    "name": "Eric",
+    "aliases": ["Eric Tseng", "eric.tseng"]
+  },
+  "todos": {
+    "skip_personal": true,
+    "personal_keywords": [
+      "insurance", "claim", "vehicle", "car", "auto",
+      "doctor", "dentist", "medical", "pharmacy", "prescription",
+      "grocery", "groceries", "shopping", "errand", "errands",
+      "coffee", "restaurant", "reservation",
+      "haircut", "dry clean", "laundry",
+      "mortgage", "taxes", "tax return",
+      "vacation", "flight", "hotel", "trip",
+      "birthday", "anniversary", "gift", "family"
+    ]
+  },
+  "gmail": {
+    "sender_filter": "no-reply@zoom.us",
+    "subject_filter": "Meeting assets",
+    "days_to_look_back": 7,
+    "mark_as_read": false
+  },
+  "calendar": {
+    "default_event_duration_minutes": 30,
+    "todo_calendar_name": "Tasks",
+    "create_events_for_followups": true,
+    "buffer_minutes_between_tasks": 15
+  },
+  "coaching": {
+    "include_communication_analysis": true,
+    "include_decision_making_review": true,
+    "include_team_dynamics": true,
+    "include_time_management": true,
+    "generate_action_items": true
+  },
+  "scheduling": {
+    "work_hours_start": "09:00",
+    "work_hours_end": "17:00",
+    "preferred_focus_times": [
+      "09:00-11:00",
+      "14:00-16:00"
+    ],
+    "avoid_scheduling_on_fridays": false,
+    "lunch_break": "12:00-13:00"
+  },
+  "priorities": {
+    "high": {
+      "keywords": ["urgent", "asap", "critical", "deadline"],
+      "schedule_within_days": 1
+    },
+    "medium": {
+      "keywords": ["soon", "important", "follow up"],
+      "schedule_within_days": 3
+    },
+    "low": {
+      "keywords": ["when possible", "eventually", "nice to have"],
+      "schedule_within_days": 7
+    }
+  },
+  "zoom": {
+    "fetch_transcripts": false,
+    "transcript_language": "en"
+  }
+}
