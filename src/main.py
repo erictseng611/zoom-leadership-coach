@@ -401,8 +401,13 @@ def _process_one_email(
                 f"  [dim]Stripped {len(personal_items)} personal item(s) from analysis[/dim]"
             )
 
-    with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]"):
-        analysis = coach.analyze_meeting(meeting_data, available_slots)
+    with console.status("[cyan]Analyzing meeting with AI coach...[/cyan]") as status:
+        def _show_progress(count: int) -> None:
+            status.update(f"[cyan]Analyzing meeting with AI coach... ({count} chunks)[/cyan]")
+
+        analysis = coach.analyze_meeting(
+            meeting_data, available_slots, on_chunk=_show_progress
+        )
 
     if analysis.get("error"):
         console.print(

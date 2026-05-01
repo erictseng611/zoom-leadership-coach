@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Dict, List
+from typing import Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -41,13 +41,23 @@ class _AnthropicProvider:
             "ANTHROPIC_MODEL", "claude-sonnet-4-20250514"
         )
 
-    def invoke(self, system: list, user_prompt: str, max_tokens: int) -> str:
+    def invoke(
+        self,
+        system: list,
+        user_prompt: str,
+        max_tokens: int,
+        on_chunk: Optional[Callable[[int], None]] = None,
+    ) -> str:
         response = self.client.messages.create(
             model=self.model_id,
             max_tokens=max_tokens,
             system=system,
             messages=[{"role": "user", "content": user_prompt}],
         )
+        # Anthropic SDK's non-streaming .create returns the whole response, so we
+        # can only fire a single "done" progress tick.
+        if on_chunk is not None:
+            on_chunk(1)
         return response.content[0].text
 
 
@@ -93,7 +103,13 @@ class _BedrockProvider:
                 "Make sure you've run 'claude-up' to authenticate."
             )
 
-    def invoke(self, system: list, user_prompt: str, max_tokens: int) -> str:
+    def invoke(
+        self,
+        system: list,
+        user_prompt: str,
+        max_tokens: int,
+        on_chunk: Optional[Callable[[int], None]] = None,
+    ) -> str:
         request_body = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": max_tokens,
@@ -106,6 +122,7 @@ class _BedrockProvider:
         )
 
         text_parts = []
+        chunks_received = 0
         input_tokens = 0
         output_tokens = 0
         for event in response["body"]:
@@ -115,6 +132,9 @@ class _BedrockProvider:
                 delta = chunk.get("delta", {})
                 if delta.get("type") == "text_delta":
                     text_parts.append(delta.get("text", ""))
+                    chunks_received += 1
+                    if on_chunk is not None:
+                        on_chunk(chunks_received)
             elif event_type == "message_start":
                 input_tokens = chunk.get("message", {}).get("usage", {}).get("input_tokens", 0)
             elif event_type == "message_delta":
@@ -141,7 +161,10 @@ class LeadershipCoach:
         self.max_tokens = 3500 if isinstance(self.provider, _BedrockProvider) else 8000
 
     def analyze_meeting(
-        self, meeting_data: Dict, calendar_availability: List[datetime]
+        self,
+        meeting_data: Dict,
+        calendar_availability: List[datetime],
+        on_chunk: Optional[Callable[[int], None]] = None,
     ) -> Dict:
         """Analyze a meeting and produce a structured coaching analysis."""
         logger.info(f"Analyzing meeting: {meeting_data['title']}")
@@ -157,7 +180,9 @@ class LeadershipCoach:
         ]
 
         try:
-            analysis_text = self.provider.invoke(system, prompt, self.max_tokens)
+            analysis_text = self.provider.invoke(
+                system, prompt, self.max_tokens, on_chunk=on_chunk
+            )
         except Exception as e:
             logger.error(f"Error during coaching analysis: {e}")
             return {
